@@ -1,5 +1,5 @@
 [package]
-name = "rangeindex"
+name = "rangeindexrs"
 version = "0.1.0"
 authors = ["IM <godmir@verizon.net>"]
 edition = "2018"
