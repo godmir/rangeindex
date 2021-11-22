@@ -4,7 +4,7 @@ version = "0.1.0"
 authors = ["IM <godmir@verizon.net>"]
 edition = "2018"
 license = "Apache-2.0"
-description = "Small WASM package for fast and memory-efficient operation indexes of sparse arrays"
+description = "fast and memory-efficient operations on indices of sparse arrays"
 repository = "https://github.com/godmir/rangeindex"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
