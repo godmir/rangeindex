@@ -1,302 +1,315 @@
-mod rangeindex {
-    use std::cmp::{Ordering, max, min};
-    //use std::ops::Range;
+// mod rangeindex {
 
-    use wasm_bindgen::prelude::*;
-    //use wasm_bindgen::convert::RefFromWasmAbi;
+use std::cmp::{Ordering, max, min};
+//use std::ops::Range;
 
-    #[wasm_bindgen]
-    #[derive(Debug, Clone, Copy)]
-    pub struct Interval { // can't use Range as it needs RefFromWasmAbi,
-                          // and I can't add it outside of the Range's crate
-        start: usize,
-        end: usize
+use wasm_bindgen::prelude::*;
+//use wasm_bindgen::convert::RefFromWasmAbi;
+
+#[wasm_bindgen]
+#[derive(Debug, Clone, Copy)]
+pub struct Interval { // can't use Range as it needs RefFromWasmAbi,
+    // and I can't add it outside of the Range's crate
+    start: usize,
+    end: usize
+}
+
+#[wasm_bindgen]
+#[derive(Debug, Clone)]
+pub struct RangeIndex {
+    chunks: Vec<Interval>,
+    offsets: Vec<usize>
+}
+
+#[wasm_bindgen]
+impl Interval {
+
+    pub fn new(start: usize, end: usize) -> Interval {
+        if start < end {
+            Interval{ start, end }
+        } else {
+            Interval{ start: 0, end: 0 }
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.end - self.start
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.end == self.start
+    }
+
+    pub fn intersect(x: &Interval, y: &Interval) -> Interval {
+        Interval::new(max(x.start, y.start), min(x.end, y.end))
+    }
+}
+
+#[wasm_bindgen]
+impl RangeIndex {
+
+    pub fn new(start: usize, end: usize) -> RangeIndex {
+        let mut ri = RangeIndex{ chunks: Vec::new(), offsets: Vec::new() };
+        ri.chunks.push(Interval::new(start, end));
+        ri.offsets.push(0);
+        ri
+    }
+
+    #[cfg(test)]
+    pub fn extend(&mut self, r: &Interval, offset: usize) {
+        self.chunks.push(r.clone());
+        self.offsets.push(offset);
     }
     
-    #[wasm_bindgen]
-    #[derive(Debug, Clone)]
-    pub struct RangeIndex {
-        chunks: Vec<Interval>,
-        offsets: Vec<usize>
+    pub fn num_chunks(&self) -> usize {
+        self.chunks.len()
+    }
+    
+    pub fn len(&self) -> usize {
+        let last = self.offsets.len() - 1;
+        self.offsets[last] + self.chunks[last].end - self.chunks[last].start
     }
 
-    #[wasm_bindgen]
-    impl Interval {
-
-        #[wasm_bindgen(constructor)]
-        pub fn new(start: usize, end: usize) -> Interval {
-            if start < end {
-                Interval{ start, end }
-            } else {
-                Interval{ start: 0, end: 0 }
+    fn _find_chunk(&self, idx: usize) -> Option<usize> {
+        let mut lo: usize = 0;
+        let mut hi: usize = self.offsets.len();
+        let mut mid = (hi + lo)/2;
+        
+        while lo < hi {
+            mid = (hi + lo) / 2;
+            match self.offsets[mid].cmp(&idx) {
+                Ordering::Equal   => return Some(mid),
+                Ordering::Greater => hi = mid,
+                Ordering::Less    => lo = mid + 1
             }
         }
-
-        pub fn len(&self) -> usize {
-            self.end - self.start
+        if self.offsets[mid] <= idx && idx < self.offsets[mid] + &self.chunks[mid].len() {
+            return Some(mid);
+        } else if self.offsets[hi] <= idx && idx < self.offsets[hi] + &self.chunks[hi].len() {
+            return Some(hi);
         }
-
-        pub fn is_empty(&self) -> bool {
-            self.end == self.start
+        None
+    }
+    
+    pub fn at(&self, idx: usize) -> usize {
+        match self._find_chunk(idx) {
+            Some(chidx) => return self.chunks[chidx].start + idx - self.offsets[chidx],
+            None        => panic!("Index {} is out of bounds for a RangeIndex of size {}", idx, self.len())
         }
+    }
 
-        pub fn intersect(x: &Interval, y: &Interval) -> Interval {
-            Interval::new(max(x.start, y.start), min(x.end, y.end))
+    pub fn materialize(&self) -> Vec<usize> {
+        let mut res = Vec::with_capacity(self.len());
+        for i in 0..self.chunks.len() {
+            let sz = res.len() + &self.chunks[i].len();
+            let mut k = self.chunks[i].start;
+            res.resize_with(sz, || { k += 1; k - 1 })
+        }
+        res
+    }
+
+    #[inline]
+    fn advance(ptr: &(usize, usize)) -> (usize, usize) {
+        (ptr.0 + ptr.1, 1 - ptr.1)
+    }
+
+    #[inline]
+    fn point(&self, ptr: &(usize, usize)) -> usize {
+        // this is a fast convenience function; it will not check boundaries
+        if ptr.1 == 0 {
+            self.chunks[ptr.0].start
+        } else {
+            self.chunks[ptr.0].end
         }
     }
     
-    #[wasm_bindgen]
-    impl RangeIndex {
-
-        #[wasm_bindgen(constructor)]
-        pub fn new(start: usize, end: usize) -> RangeIndex {
-            let mut ri = RangeIndex{ chunks: Vec::new(), offsets: Vec::new() };
-            ri.chunks.push(Interval::new(start, end));
-            ri.offsets.push(0);
-            ri
-        }
-
-        #[cfg(test)]
-        pub fn extend(&mut self, r: &Interval, offset: usize) {
-            self.chunks.push(r.clone());
-            self.offsets.push(offset);
-        }
-        
-        pub fn num_chunks(&self) -> usize {
-            self.chunks.len()
-        }
-        
-        pub fn len(&self) -> usize {
-            let last = self.offsets.len() - 1;
-            self.offsets[last] + self.chunks[last].end - self.chunks[last].start
-        }
-
-        fn _find_chunk(&self, idx: usize) -> Option<usize> {
-            let mut lo: usize = 0;
-            let mut hi: usize = self.offsets.len();
-            let mut mid = (hi + lo)/2;
-            
-            while lo < hi {
-                mid = (hi + lo) / 2;
-                match self.offsets[mid].cmp(&idx) {
-                    Ordering::Equal   => return Some(mid),
-                    Ordering::Greater => hi = mid,
-                    Ordering::Less    => lo = mid + 1
-                }
+    pub fn remove(&mut self, other: &RangeIndex) {
+        if self.chunks[self.chunks.len()-1].end <= other.chunks[0].start
+            || self.chunks[0].start >= other.chunks[other.chunks.len()-1].end {
+                return;
             }
-            if self.offsets[mid] <= idx && idx < self.offsets[mid] + &self.chunks[mid].len() {
-                return Some(mid);
-            } else if self.offsets[hi] <= idx && idx < self.offsets[hi] + &self.chunks[hi].len() {
-                return Some(hi);
-            }
-            None
+        let mut i_src = (0_usize, 0_usize);
+        let mut i_tgt = (0_usize, 0_usize);
+        let mut new_chunks: Vec<Interval> = Vec::new();
+        let mut new_offsets: Vec<usize> = Vec::new();
+        let n_tgt = self.num_chunks();
+        let n_src = other.num_chunks();
+        let mut offset = 0;
+        let mut pts_tgt = ((0, 1), (self.point(&i_tgt), i_tgt.1));
+        let mut pts_src = ((0, 1), (other.point(&i_src), i_src.1));
+        if pts_tgt.1.0 == 0 {
+            i_tgt = RangeIndex::advance(&i_tgt);
+            pts_tgt = (pts_tgt.1, (self.point(&i_tgt), i_tgt.1));
         }
-        
-        pub fn at(&self, idx: usize) -> usize {
-            match self._find_chunk(idx) {
-                Some(chidx) => return self.chunks[chidx].start + idx - self.offsets[chidx],
-                None        => panic!("Index {} is out of bounds for a RangeIndex of size {}", idx, self.len())
-            }
+        if pts_src.1.0 == 0 {
+            i_src = RangeIndex::advance(&i_src);
+            pts_src = (pts_src.1, (other.point(&i_src), i_src.1));
         }
-
-        pub fn materialize(&self) -> Vec<usize> {
-            let mut res = Vec::with_capacity(self.len());
-            for i in 0..self.chunks.len() {
-                let sz = res.len() + &self.chunks[i].len();
-                let mut k = self.chunks[i].start;
-                res.resize_with(sz, || { k += 1; k - 1 })
-            }
-            res
+        if pts_tgt.0.1 == 0 && pts_tgt.0.0 < pts_src.0.0 {
+            let new = Interval::new(pts_tgt.0.0, min(pts_tgt.1.0, pts_src.0.0));
+            new_chunks.push(new);
+            new_offsets.push(offset);
+            offset += new.len();
+            i_tgt = RangeIndex::advance(&i_tgt);
+            pts_tgt = (pts_tgt.1, (self.point(&i_tgt), i_tgt.1));
         }
-
-        #[inline]
-        fn advance(ptr: &(usize, usize)) -> (usize, usize) {
-            (ptr.0 + ptr.1, 1 - ptr.1)
-        }
-
-        #[inline]
-        fn point(&self, ptr: &(usize, usize)) -> usize {
-            // this is a fast convenience function; it will not check boundaries
-            if ptr.1 == 0 {
-                self.chunks[ptr.0].start
-            } else {
-                self.chunks[ptr.0].end
+        loop {
+            let from_state = (pts_src.0.1<<1) + pts_tgt.0.1;
+            let from_point = max(pts_src.0.0, pts_tgt.0.0);
+            let mut adv_which = 0;
+            let mut to_point: usize = from_point;
+            if pts_tgt.1.0 <= pts_src.1.0 {
+                to_point = pts_tgt.1.0;
+                adv_which += 1;
             }
-        }
-        
-        pub fn remove(&mut self, other: &RangeIndex) {
-            if self.chunks[self.chunks.len()-1].end <= other.chunks[0].start
-                || self.chunks[0].start >= other.chunks[other.chunks.len()-1].end {
-                    return;
-                }
-            let mut i_src = (0_usize, 0_usize);
-            let mut i_tgt = (0_usize, 0_usize);
-            let mut new_chunks: Vec<Interval> = Vec::new();
-            let mut new_offsets: Vec<usize> = Vec::new();
-            let n_tgt = self.num_chunks();
-            let n_src = other.num_chunks();
-            let mut offset = 0;
-            let mut pts_tgt = ((0, 1), (self.point(&i_tgt), i_tgt.1));
-            let mut pts_src = ((0, 1), (other.point(&i_src), i_src.1));
-            if pts_tgt.1.0 == 0 {
-                i_tgt = RangeIndex::advance(&i_tgt);
-                pts_tgt = (pts_tgt.1, (self.point(&i_tgt), i_tgt.1));
+            if pts_tgt.1.0 >= pts_src.1.0 {
+                to_point = pts_src.1.0;
+                adv_which += 2;
             }
-            if pts_src.1.0 == 0 {
-                i_src = RangeIndex::advance(&i_src);
-                pts_src = (pts_src.1, (other.point(&i_src), i_src.1));
-            }
-            if pts_tgt.0.1 == 0 && pts_tgt.0.0 < pts_src.0.0 {
-                let new = Interval::new(pts_tgt.0.0, min(pts_tgt.1.0, pts_src.0.0));
+            if from_state == 2 {
+                let new = Interval::new(from_point, to_point);
                 new_chunks.push(new);
                 new_offsets.push(offset);
                 offset += new.len();
+            }
+            if (adv_which & 1) == 1 {
                 i_tgt = RangeIndex::advance(&i_tgt);
+                if i_tgt.0 == n_tgt {
+                    break;
+                }
                 pts_tgt = (pts_tgt.1, (self.point(&i_tgt), i_tgt.1));
             }
-            loop {
-                let from_state = (pts_src.0.1<<1) + pts_tgt.0.1;
-                let from_point = max(pts_src.0.0, pts_tgt.0.0);
-                let mut adv_which = 0;
-                let mut to_point: usize = from_point;
-                if pts_tgt.1.0 <= pts_src.1.0 {
-                    to_point = pts_tgt.1.0;
-                    adv_which += 1;
+            if (adv_which & 2) == 2 {
+                i_src = RangeIndex::advance(&i_src);
+                if i_src.0 < n_src {
+                    pts_src = (pts_src.1, (other.point(&i_src), i_src.1));
+                } else {
+                    pts_src = (pts_src.1, (usize::MAX, 0)); // we may need to add more chunks from tgt
                 }
-                if pts_tgt.1.0 >= pts_src.1.0 {
-                    to_point = pts_src.1.0;
-                    adv_which += 2;
-                }
-                if from_state == 2 {
-                    let new = Interval::new(from_point, to_point);
-                    new_chunks.push(new);
-                    new_offsets.push(offset);
-                    offset += new.len();
-                }
-                if (adv_which & 1) == 1 {
-                    i_tgt = RangeIndex::advance(&i_tgt);
-                    if i_tgt.0 == n_tgt {
-                        break;
-                    }
-                    pts_tgt = (pts_tgt.1, (self.point(&i_tgt), i_tgt.1));
-                }
-                if (adv_which & 2) == 2 {
-                    i_src = RangeIndex::advance(&i_src);
-                    if i_src.0 < n_src {
-                        pts_src = (pts_src.1, (other.point(&i_src), i_src.1));
-                    } else {
-                        pts_src = (pts_src.1, (usize::MAX, 0)); // we may need to add more chunks from tgt
-                    }
-                }
-            }
-            if new_chunks.is_empty() {
-                self.chunks.truncate(1);
-                self.chunks[0] = Interval::new(0, 0);
-                self.offsets.truncate(1);
-                self.offsets[0] = 0;
-            } else {
-                self.chunks = new_chunks;
-                self.offsets = new_offsets;
             }
         }
-
-        pub fn add(&mut self, other: &RangeIndex) {
-            if self.len() == 0 {
-                self.chunks = other.chunks.clone();
-                self.offsets = other.offsets.clone();
-            }
-            let n_src = other.num_chunks();
-            let n_tgt = self.num_chunks();
-            let mut new_chunks: Vec<Interval> = Vec::new();
-            let mut new_offsets: Vec<usize> = Vec::new();
-            let mut offset = 0_usize;
-            let mut i_src = 0_usize;
-            let mut i_tgt = 0_usize;
-            let mut new_item: Option<Interval> = None;
-            while i_src < n_src && i_tgt < n_tgt {
-                let ch_src = &other.chunks[i_src];
-                let ch_tgt = &self.chunks[i_tgt];
-                let mut append = false;
-                if new_item.is_none() {
-                    if max(ch_tgt.start, ch_src.start) < min(ch_tgt.end, ch_src.end) {
-                        new_item = Some(Interval::new(min(ch_tgt.start, ch_src.start),
-                                                      max(ch_tgt.end, ch_src.end)));
-                        i_src += 1;
-                        i_tgt += 1;
-                    } else if ch_tgt.start < ch_src.start { // no overlap, "tgt" first
-                        new_item = Some(ch_tgt.clone());
-                        i_tgt += 1;
-                    } else { // no overlap, "src" first
-                        new_item = Some(ch_src.clone());
-                        i_src += 1;
-                    }
-                } else if ch_tgt.start < ch_src.start {
-                    let mut new_chunk = new_item.unwrap(); // no plain "get" alas
-                    if ch_tgt.start <= new_chunk.end {
-                        new_chunk.end = max(new_chunk.end, ch_tgt.end);
-                        i_tgt += 1;
-                    } else {
-                        append = true;
-                    }
-                    new_item = Some(new_chunk);
-                } else {
-                    let mut new_chunk = new_item.unwrap();
-                    if ch_src.start <= new_chunk.end {
-                        new_chunk.end = max(new_chunk.end, ch_src.end);
-                        i_src += 1;
-                    } else {
-                        append = true;
-                    }
-                    if ch_tgt.start <= new_chunk.end {
-                        new_chunk.end = max(new_chunk.end, ch_tgt.end);
-                        i_tgt += 1;
-                    }
-                    new_item = Some(new_chunk);
-                }
-                if append {
-                    let new_chunk = new_item.unwrap();
-                    new_chunks.push(new_chunk);
-                    new_offsets.push(offset);
-                    offset += new_chunk.len();
-                    new_item = None;
-                }
-            }
-            if new_item.is_some() {
-                let mut new_chunk = new_item.unwrap();
-                if i_tgt < n_tgt && new_chunk.end >= self.chunks[i_tgt].start {
-                    new_chunk.end = max(new_chunk.end, self.chunks[i_tgt].end);
-                    i_tgt += 1;
-                } else if i_src < n_src && new_chunk.end >= other.chunks[i_src].start {
-                    new_chunk.end = max(new_chunk.end, other.chunks[i_src].end);
-                    i_src += 1;
-                }
-                new_chunks.push(new_chunk);
-                new_offsets.push(offset);
-                offset += new_chunk.len();
-            }
-            if i_tgt < n_tgt {
-                new_chunks.extend_from_slice(&self.chunks[i_tgt..]);
-                let shift = offset - self.offsets[i_tgt];
-                new_offsets.resize_with(new_offsets.len() + (n_tgt - i_tgt),
-                                        || { i_tgt += 1; self.offsets[i_tgt-1] + shift });
-            }
-            if i_src < n_src {
-                new_chunks.extend_from_slice(&other.chunks[i_src..]);
-                let shift = offset - other.offsets[i_src];
-                new_offsets.resize_with(new_offsets.len() + (n_src - i_src),
-                                        || { i_src += 1; other.offsets[i_src-1] + shift });
-            }
-            // Moving
+        if new_chunks.is_empty() {
+            self.chunks.truncate(1);
+            self.chunks[0] = Interval::new(0, 0);
+            self.offsets.truncate(1);
+            self.offsets[0] = 0;
+        } else {
             self.chunks = new_chunks;
             self.offsets = new_offsets;
         }
     }
+
+    pub fn add(&mut self, other: &RangeIndex) {
+        if self.len() == 0 {
+            self.chunks = other.chunks.clone();
+            self.offsets = other.offsets.clone();
+        }
+        let n_src = other.num_chunks();
+        let n_tgt = self.num_chunks();
+        let mut new_chunks: Vec<Interval> = Vec::new();
+        let mut new_offsets: Vec<usize> = Vec::new();
+        let mut offset = 0_usize;
+        let mut i_src = 0_usize;
+        let mut i_tgt = 0_usize;
+        let mut new_item: Option<Interval> = None;
+        while i_src < n_src && i_tgt < n_tgt {
+            let ch_src = &other.chunks[i_src];
+            let ch_tgt = &self.chunks[i_tgt];
+            let mut append = false;
+            if new_item.is_none() {
+                if max(ch_tgt.start, ch_src.start) < min(ch_tgt.end, ch_src.end) {
+                    new_item = Some(Interval::new(min(ch_tgt.start, ch_src.start),
+                                                  max(ch_tgt.end, ch_src.end)));
+                    i_src += 1;
+                    i_tgt += 1;
+                } else if ch_tgt.start < ch_src.start { // no overlap, "tgt" first
+                    new_item = Some(ch_tgt.clone());
+                    i_tgt += 1;
+                } else { // no overlap, "src" first
+                    new_item = Some(ch_src.clone());
+                    i_src += 1;
+                }
+            } else if ch_tgt.start < ch_src.start {
+                let mut new_chunk = new_item.unwrap(); // no plain "get" alas
+                if ch_tgt.start <= new_chunk.end {
+                    new_chunk.end = max(new_chunk.end, ch_tgt.end);
+                    i_tgt += 1;
+                } else {
+                    append = true;
+                }
+                new_item = Some(new_chunk);
+            } else {
+                let mut new_chunk = new_item.unwrap();
+                if ch_src.start <= new_chunk.end {
+                    new_chunk.end = max(new_chunk.end, ch_src.end);
+                    i_src += 1;
+                } else {
+                    append = true;
+                }
+                if ch_tgt.start <= new_chunk.end {
+                    new_chunk.end = max(new_chunk.end, ch_tgt.end);
+                    i_tgt += 1;
+                }
+                new_item = Some(new_chunk);
+            }
+            if append {
+                let new_chunk = new_item.unwrap();
+                new_chunks.push(new_chunk);
+                new_offsets.push(offset);
+                offset += new_chunk.len();
+                new_item = None;
+            }
+        }
+        if new_item.is_some() {
+            let mut new_chunk = new_item.unwrap();
+            if i_tgt < n_tgt && new_chunk.end >= self.chunks[i_tgt].start {
+                new_chunk.end = max(new_chunk.end, self.chunks[i_tgt].end);
+                i_tgt += 1;
+            } else if i_src < n_src && new_chunk.end >= other.chunks[i_src].start {
+                new_chunk.end = max(new_chunk.end, other.chunks[i_src].end);
+                i_src += 1;
+            }
+            new_chunks.push(new_chunk);
+            new_offsets.push(offset);
+            offset += new_chunk.len();
+        }
+        if i_tgt < n_tgt {
+            // only target chunks are left - simply add them
+            new_chunks.extend_from_slice(&self.chunks[i_tgt..]);
+            if offset < self.offsets[i_tgt] {
+                let shift = self.offsets[i_tgt] - offset;
+                new_offsets.resize_with(new_offsets.len() + (n_tgt - i_tgt),
+                                        || { i_tgt += 1; self.offsets[i_tgt-1] - shift });
+            } else {                
+                let shift = offset - self.offsets[i_tgt];
+                new_offsets.resize_with(new_offsets.len() + (n_tgt - i_tgt),
+                                        || { i_tgt += 1; self.offsets[i_tgt-1] + shift });
+            }
+        }
+        if i_src < n_src {
+            new_chunks.extend_from_slice(&other.chunks[i_src..]);
+            if offset < self.offsets[i_src] {
+                let shift = self.offsets[i_src] - offset;
+                new_offsets.resize_with(new_offsets.len() + (n_src - i_src),
+                                        || { i_src += 1; self.offsets[i_src-1] - shift });
+            } else {                
+                let shift = offset - self.offsets[i_src];
+                new_offsets.resize_with(new_offsets.len() + (n_src - i_src),
+                                        || { i_src += 1; self.offsets[i_src-1] + shift });
+            }
+        }
+        // Moving
+        self.chunks = new_chunks;
+        self.offsets = new_offsets;
+    }
 }
+// }
 
 #[cfg(test)]
 mod test_rangeindex {
 
-    use crate::rangeindex::rangeindex::{Interval, RangeIndex};
+    // use crate::rangeindex::rangeindex::{Interval, RangeIndex};
+    use crate::rangeindex::{Interval, RangeIndex};
     
     fn vec_from_ranges(ranges: &[(usize, usize)]) -> Vec<usize> {
         let mut v = Vec::new();
@@ -535,15 +548,15 @@ mod test_rangeindex {
 
         let mut ri = RangeIndex::new(0, 10_000_000);
 
-        let dt0 = 100_u128; // for release version; for debug it's 5x slower
+        let dt0 = if cfg!(debug_assertions) { 700_u128 } else { 100_u128 };
         let test_data = [(2_000_000,  1_000_000,   1_000, "remove",     dt0),
                          (2_000_000,  1_000_000,   1_000, "add",        dt0),
                          (1_500_000,  1_000_000,   1_000, "remove",     dt0),
                          (1_750_000,  1_000_000,   1_000, "add",        dt0),
-                         (0,         10_000_000, 100_000, "remove",  100*dt0),
-                         (0,         10_000_000, 100_000, "add",     100*dt0),
-                         (0,         10_000_000, 100_000, "remove",  100*dt0),
-                         (0,         10_000_000, 100_000, "add",     100*dt0),
+                         (0,         10_000_000, 100_000, "remove", 100*dt0),
+                         (0,         10_000_000, 100_000, "add",    100*dt0),
+                         (0,         10_000_000, 100_000, "remove", 100*dt0),
+                         (0,         10_000_000, 100_000, "add",    100*dt0),
                          ];
 
         for &test_case in &test_data[..] {
